@@ -3,6 +3,17 @@ uuid = "c8646671-1be4-4583-91cc-fa66bfc52ab1"
 authors = ["Ben Murrell <murrellb@gmail.com> and contributors"]
 version = "1.0.0-DEV"
 
+[deps]
+Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Manifolds = "1cead3c2-87b3-11e9-0ccd-23c62b72b94e"
+NNlib = "872c559c-99b0-510c-b3b7-b6c96a88d5cd"
+Quaternions = "94ee1d12-ae83-5a48-8b1c-48b8ff168ae0"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Rotations = "6038ab10-8711-5258-84ad-4b1120ba62dc"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+StatsBase = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
+
 [compat]
 julia = "1.9"
 
