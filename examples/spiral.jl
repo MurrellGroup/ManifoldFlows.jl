@@ -40,7 +40,7 @@ batch_size = 32
 f = EuclideanFlow()
 
 lsum = 0.0f0
-for batch in 1:200000
+for batch in 1:250000
     #Set up the training sample pairs
     x0 = VectorFlowState(stack([zero_sample() for i in 1:batch_size]))
     x1 = VectorFlowState(stack([target_sample() for i in 1:batch_size]))    
@@ -56,7 +56,7 @@ for batch in 1:200000
     #Watch the loss bounce around
     lsum += l
     if mod(batch,2000)==0
-        opt[2][1].eta *= 0.95f0 #Learning rate decay
+        opt[2][1].eta *= 0.975f0 #Learning rate decay
         println("Batch: ", batch, "; LR: ", opt[2][1].eta ,"; loss: ", lsum/2000)
         lsum = 0.0f0
     end
@@ -132,7 +132,7 @@ batch_size = 32
 f = EuclideanFlow()
 
 lsum = 0.0f0
-for batch in 1:100000
+for batch in 1:250000
     #Set up the training sample pairs
     x0 = VectorFlowState(stack([zero_sample() for i in 1:batch_size]))
     x1 = VectorFlowState(stack([target_sample() for i in 1:batch_size]))    
@@ -140,7 +140,7 @@ for batch in 1:100000
 
     ######  <Optimal Transport Pairings>  ######
     #OT pairings - only needs to be done during training
-    OT = sinkhorn_plan(dismat(x0.x, x1.x), 0.01)
+    OT = sinkhorn(dismat(x0.x, x1.x), 0.01)
     any(isnan.(OT)) && continue #Skip if NaNs
     #Sample pairs from the Sinkhorn plan
     inds = stack(Tuple.(sample(CartesianIndices(OT), Weights(OT[:]), batch_size, replace = false)))
@@ -160,7 +160,7 @@ for batch in 1:100000
     #Watch the loss bounce around
     lsum += l
     if mod(batch,2000)==0
-        opt[2][1].eta *= 0.95f0 #Learning rate decay
+        opt[2][1].eta *= 0.975f0 #Learning rate decay
         println("Batch: ", batch, "; LR: ", opt[2][1].eta ,"; loss: ", lsum/2000)
         lsum = 0.0f0
     end
