@@ -176,6 +176,12 @@ end
 
 
 ### Optimal transport stuff ###
+"""
+    sinkhorn(C, λ; iters=50, standardize = true)
+
+Returns the "plan" from the Sinkhorn algorithm for optimal transport, given a cost matrix C and regularization parameter λ.
+If standardize is true, then the cost matrix is standardized by dividing by its standard deviation which can help with numerical stability.
+"""
 function sinkhorn(C, λ::T; iters=50, standardize = true) where T
     if standardize
         C = C ./ std(C)

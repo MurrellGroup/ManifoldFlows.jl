@@ -58,8 +58,7 @@ statetype(f::ManifoldVectorFlow) = VectorFlowState
 
 Converts a tuple of abstract arrays and a tuple of Flows, into a tuple of Flow-appropriate FlowStates.
 """
-#No masking:
-batch_flowstate(flowtuple::Tuple{Vararg{Flow}}, statetuple::Tuple{Vararg{AbstractArray}}) = Tuple([c(s) for (c,s) in zip(statetype.(flowtuple),statetuple)]) #ick
+batch_flowstate(flowtuple::Tuple{Vararg{Flow}}, statetuple::Tuple{Vararg{AbstractArray}}) = Tuple([c(s) for (c,s) in zip(statetype.(flowtuple),statetuple)]) #No masking
 #Allows one mask per flow state
 #Adding this copy in for a hunch about a GPU issue...
 batch_flowstate(flowtuple::Tuple{Vararg{Flow}}, statetuple::Tuple{Vararg{AbstractArray}}, masktuple::Tuple{Vararg{AbstractArray}}) = Tuple([c(s,copy(m)) for (c,s,m) in zip(statetype.(flowtuple),statetuple, masktuple)])
@@ -206,6 +205,12 @@ end
 #######################
 
 #Flow for tuples, where the model must take a tuple, do joint inference, and return a tuple of data matrices.
+"""
+    flow(f::Flow, x0::FlowState, model; steps = 100, tracker = NullTracker())
+
+Samples from the distribution implied by the model under the Flow f, starting from x0. f and x0 can also be tuples, with matches components.
+steps can be an integer, in which case a linear schedule is used, or a vector of times to specify the schedule. If a tracker is supplied, the sample paths are tracked.
+"""
 function flow(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, model; steps = 100, tracker = NullTracker())
     T = eltype(x0[1].x)
     xt = copy.(x0)
@@ -385,12 +390,19 @@ function loss(
     #return mean(x1.mask' .* site_losses) / (T(mean(x1.mask)) + T(0.0001f0))
 end
 
-#The Euclidean case doesn't actually require the current state (xt) but we include it in case we want things to work when we don't know what kind of Flow we're using
+
+"""
+    loss(f::Flow, x̂1::A, x1::A, xt::A, t::T; masked = false, eps = T(0.01), pow = 2) where A::FlowState{T}
+
+Compute a loss between the predicted end point x̂1 and the true end point x1, given the starting point xt and the time t.
+These should be considered as "default" losses, and you might need to adapt and adjust them for your problem.
+"""
 function loss(
     f::Union{EuclideanFlow,RelaxedDiscreteFlow},
     x̂1::AbstractArray{T},
     x1::VectorFlowState{T},
     xt::VectorFlowState{T},
+    #The Euclidean case doesn't actually require the current state (xt) but we include it in case we want things to work when we don't know what kind of Flow we're using
     t::Union{T,AbstractArray{T,2}};
     masked = false,
     eps = T(0.01), pow = 2
@@ -447,14 +459,25 @@ struct Relaxation{T, A<:AbstractArray{T, 2}}
     ind2alph::Dict
 end
 
-#This weirdness on the "m" is to avoid the corners, in case you're using a manifold.
+
+"""
+    Relaxation(alph::AbstractVector; T=Float32, m = matrix_that_maps_index_to_vector)
+
+Creates a Relaxation struct, which maps discrete tokens to continuous points and back again.
+"""
 function Relaxation(alph::AbstractVector; T=Float32, m = softmax(Matrix(Float32(5+log(length(alph)))*I, length(alph), length(alph))) )#, σ = T(0.1),)
+    #This weirdness on the "m" is to avoid the corners, in case you're using a manifold.
     k = size(alph, 1) #Alphabet length
     alph2ind = Dict(zip(alph, 1:k))
     ind2alph = Dict(zip(1:k, alph))
     return Relaxation(k, m, #=T(σ),=# alph2ind, ind2alph)
 end
 
+"""
+    relax(seq::AbstractVector, r::Relaxation)
+
+Converts a sequence of discrete tokens to a matrix (where each column can be thought of as a multivariant "point").
+"""
 function relax(seq, r::Relaxation)
     seq = [r.alph2ind[a] for a in seq]
     c = r.m[:, seq]
@@ -468,7 +491,12 @@ function relax(seq::OneHotArray, r::Relaxation)
 end
 =#
 
-#Finds the index of the closest column in r.m to each column in points 
+#Finds the index of the closest column in r.m to each column in points
+"""
+    unrelax(points::AbstractArray, r::Relaxation)
+
+Converts a continuous matrix (where each column can be thought of as a multivariant "point") to a sequence of discrete tokens.
+""" 
 function unrelax(points::AbstractArray, r::Relaxation; L = 2)
     return [r.ind2alph[argmin(sum((r.m .- points[:,i]).^L, dims = 1)[:])] for i in 1:size(points, 2)]
 end
