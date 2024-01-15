@@ -176,22 +176,17 @@ end
 
 
 ### Optimal transport stuff ###
-#The sinkhorn, just in case we need it.
-function sinkhorn(a, b, C, λ, tol=1e-6, max_iter=1000)
-    n, m = length(a), length(b)
-    u = ones(n)
-    v = ones(m)
-    K = exp.(-C ./ λ)
-    for _ in 1:max_iter
-        u_prev, v_prev = u, v
-        u = a ./ (K * v)
-        v = b ./ (K' * u)
-        if norm(u - u_prev) < tol && norm(v - v_prev) < tol
-            break
-        end
+function sinkhorn(C, λ::T; iters=50, standardize = true) where T
+    if standardize
+        C = C ./ std(C)
     end
-    P = Diagonal(u) * K * Diagonal(v)
-    return P
+    r,c = size(C)
+    a, b, u, v = ones(T, r)./r, ones(T, c)./c, ones(T, r), ones(T, c)
+    K = exp.(-C ./ λ)
+    for _ in 1:iters
+        u, v = a ./ (K * v), b ./ (K' * u)
+    end
+    u .* K .* v'
 end
 
 #=

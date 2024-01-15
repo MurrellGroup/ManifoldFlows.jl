@@ -95,6 +95,34 @@ function Base.cat(arrays::MatrixFlowState...; dims = 3)
     return MatrixFlowState(cat([a.x for a in arrays]..., dims = 3), vcat([a.mask for a in arrays]...))
 end
 
+##Tracking
+#Borrowing from Diffusions.jl
+struct NullTracker end
+
+track!(::NullTracker, t, xt, x̂1) = nothing
+
+struct Tracker
+    t::Vector
+    xt::Vector
+    x̂1::Vector
+end
+
+Tracker() = Tracker([], [], [])
+
+function track!(tracker::Tracker, t, xt, x̂1)
+    push!(tracker.t, t)
+    push!(tracker.xt, xt)
+    push!(tracker.x̂1, x̂1)
+    return nothing
+end
+
+function stack_tracker(tracker, field; tuple_index = 1)
+    return stack([data[tuple_index] for data in getproperty(tracker,field)])
+end
+
+export Tracker, stack_tracker
+
+
 #####################
 ### Flow Behavior ###
 #####################
@@ -178,11 +206,12 @@ end
 #######################
 
 #Flow for tuples, where the model must take a tuple, do joint inference, and return a tuple of data matrices.
-function flow(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, model; steps = 100)
+function flow(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, model; steps = 100, tracker = NullTracker())
+    T = eltype(x0[1].x)
     xt = copy.(x0)
     if typeof(steps) <: Int
-        t_step = eltype(x0[1].x)(1/steps)
-        steps = 0:t_step:1
+        t_step = T((1/steps))
+        steps = vcat(0:t_step:1,[T(1)])
     end
     for i in 2:length(steps)
         t = (steps[i]+steps[i-1])/2 #midpoint
@@ -193,11 +222,17 @@ function flow(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, model; steps
         for i in 1:length(res)
             x̂1[i].x .= res[i]
         end
-        xt = interpolate(f, xt, x̂1, min(1,step/(1-t)))
+        track!(tracker, t, xt, x̂1)
+        if isapprox(t,1)
+            @show "Reached!"
+            xt = x̂1
+        else
+            xt = interpolate(f, xt, x̂1, min(1,step/(1-t)))
+        end
     end
     return xt
 end
-flow(f::Flow, x0::FlowState, model; steps = 100) = flow((f,), (x0,), (t,xt) -> (model(t[1],xt[1]), ), steps = steps)[1]
+flow(f::Flow, x0::FlowState, model; steps = 100, tracker = NullTracker()) = flow((f,), (x0,), (t,xt) -> (model(t[1],xt[1]), ), steps = steps, tracker = tracker)[1]
     
 
 ######################################################################
@@ -437,3 +472,4 @@ end
 function unrelax(points::AbstractArray, r::Relaxation; L = 2)
     return [r.ind2alph[argmin(sum((r.m .- points[:,i]).^L, dims = 1)[:])] for i in 1:size(points, 2)]
 end
+

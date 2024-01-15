@@ -1,6 +1,4 @@
 module ManifoldFlows
-#Installation
-#Pkg.add(["Rotations","Quaternions","Manifolds","StatsBase","Random","LinearAlgebra","Adapt","NNlib","Statistics"])
 
     using Rotations
     using Quaternions
