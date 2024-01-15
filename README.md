@@ -11,8 +11,8 @@ The basic idea is that you can train a model (typically a deep neural network) t
 
 This is a visualization of a [toy example](./examples/spiral.jl) showing: i) the initial samples ($X_t$, blue) and how they change from their base distribution (a Gaussian) at $t=0$, to the spiral target distribution at $t=1$. Also shown is the model's estimate of the end state ($X_1 | X_t$, red).
 
-<img src="./assets/spiral_animation.gif" width="350">
+<img src="./assets/flow_animation.gif" width="350">
 
 The bahaviour differs depending on whether the target and base samples are paired randomly during training, or paired via optimal transport:
 
-<img src="./assets/spiral_animation_OT.gif" width="350">
+<img src="./assets/flow_animation_OT.gif" width="350">
