@@ -9,7 +9,7 @@ ManifoldFlows.jl allows you to build [Flow Matching](https://arxiv.org/pdf/2302.
 
 The basic idea is that you can train a model (typically a deep neural network) to interpolate between a simple distribution (that you can sample from) and a complex distribution (that you only have training examples from).
 
-This is a visualization of a [toy example](./examples/spiral.jl) showing: i) the initial samples ($X_t$, blue) and how they change from their base distribution (a Gaussian) at $t=0$, to the spiral target distribution at $t=1$. Also shown is the model's estimate of the end state ($X_1 | X_t$, red).
+This is a visualization of a [toy example](https://github.com/MurrellGroup/ManifoldFlows.jl/blob/main/examples/spiral.jl) showing: i) the initial samples ($X_t$, blue) and how they change from their base distribution (a Gaussian) at $t=0$, to the spiral target distribution at $t=1$. Also shown is the model's estimate of the end state ($X_1 | X_t$, red).
 
 <img src="./assets/flow_animation.gif" width="350">
 
