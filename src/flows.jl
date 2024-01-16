@@ -431,12 +431,12 @@ function loss(
     rtT = batched_transpose(rt.x)
     r̂an,r̂ax = angleaxis_stack(batched_mul(r̂1, rtT))
     ran,rax = angleaxis_stack(batched_mul(r1.x, rtT))
-    sq = compute_rot_loss_vec(r̂an,ran,r̂ax,rax)
+    sq = compute_rot_loss_vec(r̂an,ran,r̂ax,rax) ./ ((1+eps) .- t).^pow
     #@show size(sq)
     #@show size(r1.mask' .* sq)
 
     if masked
-        return mean((r1.mask' .* sq) ./ ((1+eps) .- t).^pow) / (T(mean(r1.mask)) + T(0.0001f0))
+        return mean(r1.mask' .* sq) / (T(mean(r1.mask)) + T(0.0001f0))
     else
         return mean(sq)
     end
