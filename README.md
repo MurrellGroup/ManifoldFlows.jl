@@ -25,13 +25,13 @@ The bahaviour differs depending on whether the target and base samples are paire
 ```julia
 using Pkg
 Pkg.add(url="https://github.com/MurrellGroup/ManifoldFlows.jl")
-Pkg.add(["Plots", "Flux", "StatsBase", "CUDA"])
+Pkg.add(["Plots", "Flux", "CUDA"])
 ```
 
 ### Prelims
 
 ```julia
-using ManifoldFlows, Plots, Flux, StatsBase, CUDA
+using ManifoldFlows, Plots, Flux, CUDA
 #device!(2) #If you have more than one GPU (they're zero indexed)
 
 ENV["GKSwstype"] = "100" #Allow Plots to run headless

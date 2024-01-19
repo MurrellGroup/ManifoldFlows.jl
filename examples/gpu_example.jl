@@ -1,10 +1,10 @@
 using Pkg
 Pkg.activate(".")
-#Pkg.add(["Plots", "Flux", "StatsBase", "CUDA"])
+#Pkg.add(["Plots", "Flux", "CUDA"])
 #Pkg.add(url="https://github.com/MurrellGroup/ManifoldFlows.jl")
 
-using ManifoldFlows, Plots, Flux, StatsBase, CUDA
-#device!(2) #If you have more than one GPU (they're zero indexed)
+using ManifoldFlows, Plots, Flux, CUDA
+device!(2) #If you have more than one GPU (they're zero indexed)
 
 ENV["GKSwstype"] = "100" #Allow Plots to run headless
 
