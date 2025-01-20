@@ -53,6 +53,14 @@ end
 ManifoldVectorFlow(manifold) = ManifoldVectorFlow(t -> t, manifold)
 statetype(f::ManifoldVectorFlow) = VectorFlowState
 
+# Discrete Flow Matching (https://arxiv.org/abs/2407.15595)
+struct DiscreteFlow <: VectorFlow
+    schedule::Function
+end
+DiscreteFlow() = DiscreteFlow(t -> t)
+# States are represented by one-hot vectors, and hence multi-dimensional states are represented by matrices.
+statetype(::DiscreteFlow) = MatrixFlowState
+
 """
     batch_flowstate(statetuple::Tuple{Vararg{AbstractArray}}, flowtuple::Tuple{Vararg{Flow}})
 
@@ -156,6 +164,16 @@ function interpolate(f::ManifoldVectorFlow, x0::VectorFlowState{T}, x1::VectorFl
         new_x[:,i] .= γ(t[1,i])
     end
     return VectorFlowState(new_x, x0.mask .& x1.mask)
+end
+
+function interpolate(f::DiscreteFlow, x0::MatrixFlowState{T}, x1::MatrixFlowState{T}, t) where T
+    size(t, 1) != 1 && throw(ArgumentError("t must be a row vector or a scalar"))
+    x0′ = onecold(x0.x)
+    x1′ = onecold(x1.x)
+    i = f.schedule.(t) .≥ rand(size(x0′)...)
+    xt = copy(x0′)
+    xt[i] .= x1′[i]
+    return MatrixFlowState(onehotbatch(xt, axes(x0, 1)), x0.mask .& x1.mask)
 end
 
 #Handles a tuple of FlowStates into interpolate. t is either a scalar, or a Tuple of row vectors
@@ -500,4 +518,3 @@ Converts a continuous matrix (where each column can be thought of as a multivari
 function unrelax(points::AbstractArray, r::Relaxation; L = 2)
     return [r.ind2alph[argmin(sum((r.m .- points[:,i]).^L, dims = 1)[:])] for i in 1:size(points, 2)]
 end
-

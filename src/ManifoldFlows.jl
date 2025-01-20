@@ -9,6 +9,7 @@ module ManifoldFlows
     using Statistics: mean
     using Adapt: Adapt
     using NNlib
+    using OneHotArrays: onecold, onehotbatch
 
 include("flows.jl")
 include("geometry.jl")
@@ -18,6 +19,7 @@ export
     RotationalFlow,
     RelaxedDiscreteFlow,
     ManifoldVectorFlow,
+    DiscreteFlow,
     VectorFlowState,
     MatrixFlowState,
     interpolate,
