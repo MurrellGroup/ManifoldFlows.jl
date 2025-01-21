@@ -9,6 +9,7 @@ module ManifoldFlows
     using Statistics: mean
     using Adapt: Adapt
     using NNlib
+    using ForwardDiff: derivative
     using OneHotArrays: onecold, onehotbatch
 
 include("flows.jl")

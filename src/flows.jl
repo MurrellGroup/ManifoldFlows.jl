@@ -256,6 +256,45 @@ function flow(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, model; steps
     return xt
 end
 flow(f::Flow, x0::FlowState, model; steps = 100, tracker = NullTracker()) = flow((f,), (x0,), (t,xt) -> (model(t[1],xt[1]), ), steps = steps, tracker = tracker)[1]
+
+function flow(f::DiscreteFlow, x0::MatrixFlowState, model; steps = 100, tracker = NullTracker(), rng = Random.GLOBAL_RNG)
+    κ(t) = f.schedule(t)
+    κ̇(t) = derivative(κ, t)
+    xt = copy(x0.x)
+    timesteps = range(0, 1f0, length = steps)
+    for i in firstindex(timesteps):lastindex(timesteps)-1
+        t = timesteps[i]
+        track!(tracker, t, xt, nothing)
+        logits = model(fill(t, 1, size(xt, ndims(xt))), xt)
+        # forward velocity u_t(⋅, Xt) (equation 24)
+        velo = (κ̇(t) / (1 - κ(t))) .* (softmax(logits) - xt)
+        p = xt + (timesteps[i+1] - t) * velo
+        xt = randcat(rng, p ./ sum(p, dims = 1))
+    end
+    xt
+end
+
+function randcat(rng::AbstractRNG, p::AbstractArray)
+    x = zeros(Int, Base.tail(size(p)))
+    for i in CartesianIndices(axes(x))
+        x[i] = _randcat(rng, @view p[:,i])
+    end
+    onehotbatch(x, axes(p, 1))
+end
+
+function _randcat(rng::AbstractRNG, p::AbstractVector)
+    K = length(p)
+    @assert K ≥ 1
+    # This algorithm is O(K), but it is fine because we don't generate many
+    # samples from the same distribution.
+    u = rand(rng, eltype(p))
+    k = 0
+    while u ≥ 0 && k < K
+        k += 1
+        u -= p[k]
+    end
+    return k
+end
     
 
 ######################################################################
