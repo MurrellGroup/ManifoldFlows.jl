@@ -76,3 +76,20 @@ end
     diff = onecold(x0.x) .!= onecold(x1.x)
     @test sum(onecold(xt.x)[diff] .== onecold(x1.x)[diff]) / sum(diff) ≈ 0.3 atol=0.05
 end
+
+@testset "Samples" begin
+    f = EuclideanFlow()
+    x0 = VectorFlowState(zeros(Float32, 2, 10))
+    model(t, xt) = randn(Float32, size(xt))
+    x1 = flow(f, x0, model)
+    @test size(x1) == size(x0)
+
+    f1 = EuclideanFlow()
+    x01 = VectorFlowState(zeros(Float32, 2, 10))
+    f2 = EuclideanFlow()
+    x02 = VectorFlowState(zeros(Float32, 3, 15))
+    model(t, (xt1, xt2)) = (randn(Float32, size(xt1)), randn(Float32, size(xt2)))
+    x11, x12 = flow((f1, f2), (x01, x02), model)
+    @test size(x11) == size(x01)
+    @test size(x12) == size(x02)
+end
