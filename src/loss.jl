@@ -44,7 +44,7 @@ end
 
 #Notice how the non-trivial manifold loss requires an extra point
 function loss(
-    flow::Flow,
+    flow::ManifoldFlow,
     r̂1::AbstractArray{T}, # predicted end point (as array)
     r1::BatchedState{T}, # true end point
     rt::BatchedState{T}, # starting point
@@ -84,7 +84,7 @@ function loss(
 end
 
 """
-    loss(f::Flow, x̂1::A, x1::A, xt::A, t::T; masked = false, eps = T(0.01), pow = 2) where A<:FlowState{T}
+    loss(f::ManifoldFlow, x̂1::AbstractArray, x1::BatchedState, xt::BatchedState, t::T; masked = false, eps = T(0.01), pow = 2)
 
 Compute a loss between the predicted end point x̂1 and the true end point x1, given the starting point xt and the time t.
 These should be considered as "default" losses, and you might need to adapt and adjust them for your problem.

@@ -10,7 +10,8 @@ using Adapt: Adapt
 using NNlib
 
 include("flows.jl")
-export Flow, State, BatchedState
+export AbstractFlow, ManifoldFlow, DiscreteFlow
+export State, BatchedState
 export statesize, flatarray
 export Tracker, stack_tracker
 export EuclideanFlow, RotationalFlow, RelaxedDiscreteFlow, ManifoldVectorFlow

@@ -20,7 +20,7 @@ Random.seed!(0)
 
     @testset "flows.jl" begin
         for D in [1, 2, 3]
-            flow = Flow(Euclidean(D))
+            flow = ManifoldFlow(Euclidean(D))
             x₀ = BatchedState(zeros(Float32, D, 10))
             x₁ = BatchedState(zeros(Float32, D, 10))
             xₜ = BatchedState(zeros(Float32, D, 10))
@@ -34,7 +34,7 @@ Random.seed!(0)
         end
 
         for D in [1, 2, 3]
-            f = Flow(SpecialOrthogonal(3))
+            flow = ManifoldFlow(SpecialOrthogonal(3))
             x₀ = BatchedState(identity_rot_stack(Float32, 10))
             x₁ = BatchedState(identity_rot_stack(Float32, 10))
             xₜ = BatchedState(identity_rot_stack(Float32, 10))
@@ -50,7 +50,7 @@ Random.seed!(0)
         k = 20
         n = 10
         relaxation = Relaxation(1:k)
-        flow = Flow(ProbabilitySimplex(k-1))
+        flow = ManifoldFlow(ProbabilitySimplex(k-1))
         x₀ = BatchedState(Float32.(stack(rand(flow.manifold, n))))
         x₁ = BatchedState(relax(relaxation, 1:n))
         xₜ = BatchedState(ManifoldFlows.softmax(zeros(Float32, k, n)))

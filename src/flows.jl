@@ -1,68 +1,77 @@
 using Manifolds
-using ArraysOfArrays: VectorOfSimilarArrays, nestedview, flatview, innersize
+using ArraysOfArrays: ArrayOfSimilarArrays, nestedview, flatview, innersize
 using FillArrays: Fill
 
-struct Flow{M<:AbstractManifold,S}
+abstract type AbstractFlow{S} end
+
+struct ManifoldFlow{M<:AbstractManifold,S} <: AbstractFlow{S}
     manifold::M
     schedule::S
 end
+
+#=struct DiscreteFlow{S} <: AbstractFlow{S}
+    schedule::S
+end=#
 
 struct State{T,N,A<:AbstractArray{T,N}}
     x::A
 end
 
-struct BatchedState{T,N,B<:VectorOfSimilarArrays{T,N},M<:AbstractVector{Bool}} <: AbstractVector{State{T,N}}
-    xs::B
+struct BatchedState{T,N,B,A<:ArrayOfSimilarArrays{T,N,B},M<:AbstractVector{Bool}} <: AbstractArray{State{T,N},B}
+    xs::A
     mask::M
 end
 
-statesize(flow::Flow) = representation_size(flow.manifold)
+statesize(flow::ManifoldFlow) = representation_size(flow.manifold)
 statesize(state::State) = size(state.x)
 statesize(states::BatchedState) = innersize(states.xs)
 
 flatarray(state::State) = state.x
 flatarray(states::BatchedState) = flatview(states.xs)
 
-Flow(manifold::AbstractManifold) = Flow(manifold, identity)
+ManifoldFlow(manifold::AbstractManifold) = ManifoldFlow(manifold, identity)
 
-function BatchedState(xs::VectorOfSimilarArrays, mask=fill(true, length(xs)))
+function BatchedState(xs::ArrayOfSimilarArrays, mask=fill(true, length(xs)))
     @assert eachindex(xs) == eachindex(mask)
     return BatchedState(xs, mask)
 end
 
-function BatchedState(xs::AbstractArray{T,N}, args...) where {T,N}
-    return BatchedState(nestedview(xs, N-1), args...)
+function BatchedState(xs::AbstractArray{T,NB}, B::Int, args...) where {T,NB}
+    return BatchedState(nestedview(xs, NB-B), args...)
 end
 
-function BatchedState(states::AbstractVector{<:State}, args...)
-    return BatchedState(VectorOfSimilarArrays(map(state -> flatarray(state), states)), args...)
+BatchedState(xs::AbstractArray, args...) = BatchedState(xs, 1, args...)
+
+function BatchedState(states::AbstractArray{<:State,B}, args...) where B
+    return BatchedState(ArrayOfSimilarArrays(flatarray.(states)), args...)
 end
 
 Base.size(b::BatchedState) = size(b.xs)
-Base.getindex(b::BatchedState, i::Integer) = State(b.xs[i])
-Base.setindex!(b::BatchedState, i::Integer, v::State) = b.xs[i] = v.x
-
+Base.getindex(b::BatchedState{T,N,B}, i::Vararg{Int,B}) where {T,N,B} = State(b.xs[i...])
+Base.setindex!(b::BatchedState{T,N,B}, v::State, i::Vararg{Int,B}) where {T,N,B} = b.xs[i...] = v.x
 Base.copy(b::BatchedState) = BatchedState(copy(b.xs), copy(b.mask))
+
+Base.show(io::IO, state::State) = print(io, "State(", repr(state.x; context=IOContext(io)), ")")
 
 
 ### Flow Behavior
 
-const EuclideanFlow = Flow{<:Euclidean}
-const RelaxedDiscreteFlow = Flow{<:ProbabilitySimplex}
-const RotationalFlow = Flow{<:SpecialOrthogonal}
+const EuclideanFlow = ManifoldFlow{<:Euclidean}
+const RelaxedDiscreteFlow = ManifoldFlow{<:ProbabilitySimplex}
+const RotationalFlow = ManifoldFlow{<:SpecialOrthogonal}
 const LinearFlow = Union{EuclideanFlow,RelaxedDiscreteFlow}
 
 # for yeeting an array into higher dimensions
 shiftdims(x::AbstractArray, n::Integer) = reshape(x, ntuple(Returns(1), n)..., size(x)...)
 
-function interpolate(flow::Flow, x₀::State{T,N}, x₁::State{T,N}, t::Real) where {T,N}
+function interpolate(flow::ManifoldFlow, x₀::State{T,N}, x₁::State{T,N}, t::Real) where {T,N}
     t′ = flow.schedule(T(t))
     γ = shortest_geodesic(flow.manifold, flatarray(x₀), flatarray(x₁))
     return State(γ(t′))
 end
 
-function interpolate(flow::Flow, x₀::BatchedState{T,N}, x₁::BatchedState{T,N}, t::AbstractVector) where {T,N}
-    xₜ = BatchedState(similar(x₁.xs), x₀.mask .& x₁.mask)
+function interpolate(flow::ManifoldFlow, x₀::BatchedState{T,N}, x₁::BatchedState{T,N}, t::AbstractVector) where {T,N}
+    xₜ = BatchedState(similar(flatarray(x₁)), x₀.mask .& x₁.mask)
     for i in eachindex(xₜ)
         xₜ[i] = interpolate(flow, x₀[i], x₁[i], t[i])
     end
@@ -75,7 +84,7 @@ function interpolate(flow::Union{EuclideanFlow,RelaxedDiscreteFlow}, x₀::Batch
     return xₜ
 end
 
-function interpolate(flow::Flow{<:SpecialOrthogonal{3}}, x₀::BatchedState{T,N}, x₁::BatchedState{T,N}, t::AbstractVector) where {T,N}
+function interpolate(flow::ManifoldFlow{<:SpecialOrthogonal{3}}, x₀::BatchedState{T,N}, x₁::BatchedState{T,N}, t::AbstractVector) where {T,N}
     t′ = flow.schedule.(T.(t))
     display(size(flatarray(x₀)))
     display(size(flatarray(x₁)))
@@ -95,7 +104,7 @@ interpolate(flow, x₀, x₁, t::Real) = interpolate(flow, x₀, x₁, Fill(t, s
 
 Perturb the flow by a random amount, respecting the manifold, but do not change states where mask is false.
 """
-function perturb!(rng::AbstractRNG, flow::Flow, state::State{T}, σ::Real) where T
+function perturb!(rng::AbstractRNG, flow::ManifoldFlow, state::State{T}, σ::Real) where T
     # note from old code: this throws inexact error for probability simplex sometimes.
     rv = rand(rng, flow.manifold, vector_at=state.x, σ=T(σ)) # Random vector in the tangent space
     state.x .= exp(flow.manifold, state.x, rv) # Exponential map of rv
@@ -107,7 +116,7 @@ function perturb!(rng::AbstractRNG, ::LinearFlow, state::State{T}, σ::Real) whe
     return state
 end
 
-function perturb!(rng::AbstractRNG, ::Flow{<:SpecialOrthogonal{3}}, state::State, σ::Real)
+function perturb!(rng::AbstractRNG, ::ManifoldFlow{<:SpecialOrthogonal{3}}, state::State, σ::Real)
     state.x .= state.x * randrot(rng, σ)
     return state
 end
@@ -117,7 +126,7 @@ function perturb!(rng::AbstractRNG, ::LinearFlow, states::BatchedState{T,N}, σ:
     return states
 end
 
-function perturb!(rng::AbstractRNG, flow::Flow, states::BatchedState,  σ::Real)
+function perturb!(rng::AbstractRNG, flow::ManifoldFlow, states::BatchedState,  σ::Real)
     foreach(states, states.mask) do state, m
         m && perturb!(rng, flow, state, σ)
     end
@@ -166,13 +175,13 @@ end
 
 #Flow for tuples, where the model must take a tuple, do joint inference, and return a tuple of data arrays.
 """
-    flow(f::Flow, x₀::State, model, steps=100, tracker=NullTracker())
+    flow(f::AbstractFlow, x₀::State, model, steps=100, tracker=NullTracker())
 
-Samples from the distribution implied by the model under the Flow f, starting from x0. f and x0 can also be tuples, with matches components.
+Samples from the distribution implied by the model under the `AbstractFlow` f, starting from x0. f and x0 can also be tuples, with matches components.
 steps can be an integer, in which case a linear schedule is used, or a vector of times to specify the schedule. If a tracker is supplied, the sample paths are tracked.
 """
 function flow(
-    f::Tuple{Vararg{Flow}}, X₀::Tuple{Vararg{BatchedState{T}}}, model, steps::AbstractVector;
+    f::Tuple{Vararg{AbstractFlow}}, X₀::Tuple{Vararg{BatchedState{T}}}, model, steps::AbstractVector;
     tracker::Function=Returns(nothing)
 ) where T
     Xₜ = copy(X₀) # capitalized cause tuple
@@ -196,7 +205,7 @@ end
 flow(f, x0, model, steps::Integer=100; kwargs...) =
     flow(f, x0, model, [range(0, 1, steps); 1]; kwargs...)
 
-flow(f::Flow, x0::BatchedState, model, args...; kwargs...) =
+flow(f::AbstractFlow, x0::BatchedState, model, args...; kwargs...) =
     flow((f,), (x0,), (t,xt) -> (model(t[1],xt[1]),), args...; kwargs...)[1]
 
 
