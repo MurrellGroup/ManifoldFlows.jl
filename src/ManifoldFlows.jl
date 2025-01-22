@@ -21,6 +21,5 @@ include("geometry.jl")
 export rand_rot_stack, identity_rot_stack
 
 include("loss.jl")
-export loss
 
 end

@@ -1,4 +1,5 @@
 using ManifoldFlows
+using ManifoldFlows: loss
 using Test
 using Manifolds
 using Statistics
