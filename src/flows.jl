@@ -62,10 +62,9 @@ function interpolate(flow::Flow, x₀::State{T,N}, x₁::State{T,N}, t::Real) wh
 end
 
 function interpolate(flow::Flow, x₀::BatchedState{T,N}, x₁::BatchedState{T,N}, t::AbstractVector) where {T,N}
-    t′ = flow.schedule.(T.(t))
     xₜ = BatchedState(similar(x₁.xs), x₀.mask .& x₁.mask)
     for i in eachindex(xₜ)
-        xₜ[i] = interpolate(flow, x₀[i], x₁[i], t′[i])
+        xₜ[i] = interpolate(flow, x₀[i], x₁[i], t[i])
     end
     return xₜ
 end
