@@ -1,59 +1,53 @@
-#Geometry
-
 #Geodesic rotational interpolation
-#Off GPU
-#Note: could maybe replace this with whatever Manifolds.jl gets you for free.
 """
-slerp(a,b,t)
+    slerp(x₀, x₁, t) -> xₜ
 
-Interpolation between two 3-by-3-by-N stacks of rotation matrices,performing
+Interpolation between two 3×3×N stacks of rotation matrices, performing
 Spherical linear interpolation (Slerp) on each pair of rotation matrices.
 """
-function slerp_stack(x0::AbstractArray{T, 3} , x1::AbstractArray{T, 3}, t::AbstractArray{T}) where T
-    @assert (size(x0) == size(x1)) && (length(size(x0)) == 3) && (size(x0)[1:2] == (3,3)) && (size(x0)[3] == length(t))
-    new_x = copy(x1)
-    for i in 1:size(x0,3)
-        new_x[:,:,i] .= Matrix(QuatRotation(slerp(QuatRotation(x0[:,:,i]),QuatRotation(x1[:,:,i]),t[:][i])))
+function slerp_stack(x₀::AbstractArray{T,3}, x₁::AbstractArray{T,3}, t::AbstractVector{T}) where T
+    xₜ = similar(x₁)
+    @assert (axes(x₀) == axes(x₁) == axes(xₜ)) && (axes(x₀, 3) == axes(t, 1))
+    @inbounds @views for i in axes(x₀, 3)
+        xₜ[:,:,i] = QuatRotation(slerp(QuatRotation(x₀[:,:,i]), QuatRotation(x₁[:,:,i]), t[i]))
     end
-    return new_x
+    return xₜ
 end
-slerp_stack(x0::AbstractArray{T, 3} , x1::AbstractArray{T, 3}, t::T) where T = slerp_stack(x0,x1,fill(t, size(x0,3)))
+
+slerp_stack(x₀::AbstractArray{T,N}, x₁::AbstractArray{T,N}, t::T) where {T,N} =
+    slerp_stack(x₀, x₁, fill(t, size(x₀)[3:end]))
 
 
-#approxacos(x) = pi/2 - x - (x^3)/6 + (x^5)/120
-
-#Logarithmic map. Needs to work on a GPU, and with Zygote
+# Logarithmic map. Needs to work on a GPU, and with Zygote
 """
-log_rot_stack(R::AbstractArray{T, 3})
+    log_rot_stack(R::AbstractArray{T,3})
 
-Calculate the logarithmic map of each rotation in a stack of 3-by-3-by-N rotation matrices.
-
+Calculate the logarithmic map of each rotation in a stack of 3×3×N rotation matrices.
 log_rot_stack(A) is calculating the same thing as stack([log(A[:,:,i]) for i in 1:size(A,3)])
 """
-function log_rot_stack(R::AbstractArray{T, 3}) where T
-    tr_R = R[1,1,:] .+ R[2,2,:] .+ R[3,3,:]
+function log_rot_stack(R::AbstractArray{T,3}) where T
+    @assert size(R, 1) == size(R, 2) == 3
 
-    theta = acos.(clamp.((tr_R .- 1) ./ 2,T(-1),T(1)))
+    @views tr_R = R[1,1,:] + R[2,2,:] + R[3,3,:]
 
-    small_theta = abs.(theta) .< 1e-5
-    sin_theta = sin.(theta)
-    coeff = @. (1 - small_theta) * theta / (2 * sin_theta)
+    Θ = @. acos(clamp((tr_R - 1) / 2, T(-1), T(1)))
+    coeff = @. (abs(Θ) > T(1e-5)) * Θ / 2sin(Θ)
 
-    omega_12 = reshape(coeff .* (R[1,2,:] .- R[2,1,:]), 1, 1, :)
-    omega_13 = reshape(coeff .* (R[1,3,:] .- R[3,1,:]), 1, 1, :)
-    omega_23 = reshape(coeff .* (R[2,3,:] .- R[3,2,:]), 1, 1, :)
-    zero_vec = reshape(zeros(T, length(theta)), 1, 1, :)
-    
-    omega = reshape(vcat(zero_vec, -omega_12, -omega_13,
-                omega_12, zero_vec, -omega_23,
-                omega_13, omega_23, zero_vec) , 3, 3, :)
+    @views omega₁₂ = reshape(coeff .* (R[1,2,:] .- R[2,1,:]), 1, 1, :)
+    @views omega₁₃ = reshape(coeff .* (R[1,3,:] .- R[3,1,:]), 1, 1, :)
+    @views omega₂₃ = reshape(coeff .* (R[2,3,:] .- R[3,2,:]), 1, 1, :)
+    zero_vec = zeros(T, 1, 1, size(R, 3))
 
-    return omega
+    return [
+        zero_vec  omega₁₂  omega₁₃
+        -omega₁₂ zero_vec  omega₂₃
+        -omega₁₃ -omega₂₃ zero_vec
+    ]
 end
 
 
 """
-randrot(σ²)
+    randrot(σ²)
 
 Generate a random rotation matrix, with each element drawn from the
 exponential map of a normal distribution with variance σ².
@@ -63,100 +57,89 @@ function randrot(rng::Random.AbstractRNG, σ²::Real)
     T = typeof(σ)
     return QuatRotation(exp(quat(0, randn(rng, T) * σ, randn(rng, T) * σ, randn(rng, T) * σ)))
 end
+
 randrot(σ²::Real) = randrot(Random.default_rng(), σ²)
 
 
 """
-rot_identity_stack(T,N)
+    identity_rot_stack(T,N)
 
-Generate a stack of 3-by-3-by-N identity matrices of type T.
+Generate a stack of 3×3×N identity matrices of type T.
 """
-function rot_identity_stack(T,N)
+function identity_rot_stack(T, N)
     R = zeros(T, 3, 3, N)
-    R .= Matrix(I, 3, 3)
+    R .= I(3)
     return R
 end
 
 rand_rot_stack(rng,T,N) = T.(stack([rand(rng, QuatRotation) for i in 1:N]))
 rand_rot_stack(T,N) = rand_rot_stack(Random.default_rng(),T,N)
 
-export rand_rot_stack
-
-#T.(stack([rand(FrameDance.QuatRotation) for i in 1:l]))
 
 """
     quats2rots(q)
 
-Convert a 4-by-N array of quaternions to a 3-by-3-by-N array of rotation matrices.
+Convert a 4×N array of quaternions to a 3×3×N array of rotation matrices.
 """
-function quats2rots(q)
- 
-    sx = 2q[1, :] .* q[2, :]
-    sy = 2q[1, :] .* q[3, :]
-    sz = 2q[1, :] .* q[4, :]
+function quats2rots(q::AbstractMatrix{<:Number})
+    @views a, b, c, d = q[1:1, :], q[2:2, :], q[3:3, :], q[4:4, :]
 
-    xx = 2q[2, :].^2
-    xy = 2q[2, :] .* q[3, :]
-    xz = 2q[2, :] .* q[4, :]
+    sx = 2a .* b
+    sy = 2a .* c
+    sz = 2a .* d
+    xx = 2(b.^2)
+    xy = 2b .* c
+    xz = 2b .* d
+    yy = 2(c.^2)
+    yz = 2c .* d
+    zz = 2(d.^2)
 
-    yy = 2q[3, :].^2
-    yz = 2q[3, :] .* q[4, :]
-    zz = 2q[4, :] .^ 2  
-    
-    r1 = reshape(1 .- (yy .+ zz), 1, :)
-    r2 = reshape(xy .- sz, 1, :)
-    r3 = reshape(xz .+ sy, 1, :)
+    r1 = 1 - (yy + zz)
+    r2 = xy - sz
+    r3 = xz + sy
+    r4 = xy + sz
+    r5 = 1 - (xx + zz)
+    r6 = yz - sx
+    r7 = xz - sy
+    r8 = yz + sx
+    r9 = 1 - (xx + yy)
 
-    r4 = reshape( xy .+ sz, 1, :)
-    r5 = reshape(1 .- (xx .+ zz), 1, :)
-    r6 = reshape( yz .- sx, 1, :)
-
-    r7 = reshape(xz .- sy, 1, :)
-    r8 = reshape(yz .+ sx, 1, :)
-    r9 = reshape(1 .- (xx .+ yy), 1, :)
-
-    return reshape(vcat(r1, r4, r7, r2, r5, r8, r3, r6, r9), 3, 3, :)
+    return [
+        r1 r2 r3
+        r4 r5 r6
+        r7 r8 r9
+    ]
 end
 
 """
-    bcds2quats(bcd::AbstractArray{<: Real, 2})
+    bcds2quats(bcd::AbstractMatrix)
 
-Convert a 3xN array of partial quaternions to an array of (flat) unit quaternions.
+Convert a 3×N array of partial quaternions to an array of (flat) unit quaternions.
 """
-function bcds2quats(bcd::AbstractArray{<: Real, 2})
-    denom = sqrt.(1 .+ bcd[1,:].^2 .+ bcd[2,:].^2 .+ bcd[3,:].^2)
-    return vcat((1 ./ denom)', bcd ./ denom')
+function bcds2quats(bcd::AbstractMatrix{T}, a::T=T(1)) where T<:Number
+    norms = sqrt.(a .+ sum(abs2, bcd, dims=1))
+    return vcat(a ./ norms, bcd ./ norms)
 end
 
 
 """
-angle_axis_stack(R::AbstractArray{T, 3})
+    angleaxis_stack(R::AbstractArray)
 
-Convert a stack of 3-by-3-by-N rotation matrices to a row vector of angles and a 3-by-N matrix of axis...es?
+Convert a stack of 3×3×N rotation matrices to a row vector of angles and a 3×N matrix of axes?
 """
-function angleaxis_stack(R::AbstractArray{T, 3}) where T
-    eps = T(0.00001)  # Numerical stability threshold
-    tr_R = R[1,1,:] .+ R[2,2,:] .+ R[3,3,:]
-    
-    # Compute angle
-    theta = acos.(clamp.((tr_R .- 1) ./ 2,T(-0.99),T(0.99)))
-    sin_theta = sin.(theta)
+function angleaxis_stack(R::AbstractArray{T,3}) where T
+    @views tr_R = R[1,1,:] + R[2,2,:] + R[3,3,:]
 
-    # Compute coefficient with conditional for numerical stability
-    coeff = T(0.5) ./ (sin_theta .+ eps)
-    
-    # Compute axis components
-    axis_x = reshape(coeff .* (R[3,2,:] .- R[2,3,:]), 1, :)
-    axis_y = reshape(coeff .* (R[1,3,:] .- R[3,1,:]), 1, :)
-    axis_z = reshape(coeff .* (R[2,1,:] .- R[1,2,:]), 1, :)
-    
-    # Combine into a single array
-    axis = vcat(axis_x, axis_y, axis_z)
-    
-    # Reshape theta for concatenation
-    theta = reshape(theta, 1, :)
-    
-    return theta, axis
+    Θ = @. acos(clamp((tr_R - 1) / 2, T(-0.99), T(0.99)))
+    coeff = @. T(0.5) / (sin(Θ) + T(1e-5))
+
+    @views axis_x = reshape(coeff .* (R[3,2,:] .- R[2,3,:]), 1, :)
+    @views axis_y = reshape(coeff .* (R[1,3,:] .- R[3,1,:]), 1, :)
+    @views axis_z = reshape(coeff .* (R[2,1,:] .- R[1,2,:]), 1, :)
+
+    axis = [axis_x; axis_y; axis_z]
+
+    return reshape(Θ, 1, :), axis
 end
 
 #This gives you a vector of losses, which you can scale, mask, etc
@@ -165,12 +148,11 @@ function compute_rot_loss_vec(
     an1::AbstractArray{T},
     ax1hat::AbstractArray{T},
     ax1::AbstractArray{T};
-    an_vs_ax_weight = T(0.5)) where T
-    
+    an_vs_ax_weight = T(0.5)
+) where T    
     axis_loss = mean((ax1hat .- ax1) .^ 2, dims=1) # Summing along rows
     angle_loss = (an1hat .- an1) .^ 2
     rot_loss = (an_vs_ax_weight .* angle_loss) .+ (1 - an_vs_ax_weight) .* axis_loss
-
     return rot_loss
 end
 

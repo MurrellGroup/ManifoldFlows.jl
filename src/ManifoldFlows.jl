@@ -1,35 +1,26 @@
 module ManifoldFlows
 
-    using Rotations
-    using Quaternions
-    using LinearAlgebra
-    using StatsBase
-    using Random
-    using Manifolds
-    using Statistics: mean
-    using Adapt: Adapt
-    using NNlib
+using Rotations
+using Quaternions
+using LinearAlgebra
+using Random
+using Manifolds
+using Statistics: mean, std
+using Adapt: Adapt
+using NNlib
 
 include("flows.jl")
-include("geometry.jl")
+export Flow, State, BatchedState
+export statesize, flatarray
+export Tracker, stack_tracker
+export EuclideanFlow, RotationalFlow, RelaxedDiscreteFlow, ManifoldVectorFlow
+export interpolate, perturb!, flow
+export Relaxation, relax, unrelax
 
-export
-    EuclideanFlow,
-    RotationalFlow,
-    RelaxedDiscreteFlow,
-    ManifoldVectorFlow,
-    VectorFlowState,
-    MatrixFlowState,
-    interpolate,
-    perturb!,
-    rot_identity_stack,
-    quats2rots,
-    bcds2quats,
-    loss,
-    flow,
-    Relaxation,
-    relax,
-    unrelax,
-    ProbabilitySimplex
+include("geometry.jl")
+export rand_rot_stack, identity_rot_stack
+
+include("loss.jl")
+export loss
 
 end

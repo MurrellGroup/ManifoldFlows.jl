@@ -1,106 +1,215 @@
-#Replaces flow.jl, manifolds.jl, loss.gl
-#Update tests!
+using Manifolds
+using ArraysOfArrays: VectorOfSimilarArrays, nestedview, flatview, innersize
+using FillArrays: Fill
 
+struct Flow{M<:AbstractManifold,S}
+    manifold::M
+    schedule::S
+end
 
-abstract type Flow end
-abstract type VectorFlow <: Flow end #State represented by a vector
-abstract type MatrixFlow <: Flow end #State represented by a matrix
-abstract type FlowState{T, N} <: AbstractArray{T, N} end
-
-export Flow, VectorFlow, MatrixFlow, FlowState
-
-### Flow State Structs ###
-struct VectorFlowState{T, A<:AbstractArray{T, 2}, B <: AbstractVector{Bool}} <: FlowState{T, 2}
+struct State{T,N,A<:AbstractArray{T,N}}
     x::A
-    mask::B
-end
-function VectorFlowState(A::AbstractArray{T, 2}) where T
-    return VectorFlowState(A, fill(true, size(A, 2)))
 end
 
-struct MatrixFlowState{T, A<:AbstractArray{T, 3}, B <: AbstractVector{Bool}} <: FlowState{T, 3}
-    x::A
-    mask::B
-end
-function MatrixFlowState(A::AbstractArray{T, 3}) where T
-    return MatrixFlowState(A, fill(true, size(A, 3)))
+struct BatchedState{T,N,B<:VectorOfSimilarArrays{T,N},M<:AbstractVector{Bool}} <: AbstractVector{State{T,N}}
+    xs::B
+    mask::M
 end
 
+statesize(flow::Flow) = representation_size(flow.manifold)
+statesize(state::State) = size(state.x)
+statesize(states::BatchedState) = innersize(states.xs)
 
-### Flows ###
-struct EuclideanFlow <: VectorFlow
-    schedule::Function
-end
-EuclideanFlow() = EuclideanFlow(t -> t)
-statetype(f::EuclideanFlow) = VectorFlowState
+flatarray(state::State) = state.x
+flatarray(states::BatchedState) = flatview(states.xs)
 
-struct RelaxedDiscreteFlow <: VectorFlow
-    schedule::Function
-end
-RelaxedDiscreteFlow() = RelaxedDiscreteFlow(t -> t)
-statetype(f::RelaxedDiscreteFlow) = VectorFlowState
+Flow(manifold::AbstractManifold) = Flow(manifold, identity)
 
-struct RotationalFlow <: MatrixFlow
-    schedule::Function
+function BatchedState(xs::VectorOfSimilarArrays, mask=fill(true, length(xs)))
+    @assert eachindex(xs) == eachindex(mask)
+    return BatchedState(xs, mask)
 end
-RotationalFlow() = RotationalFlow(t -> t)
-statetype(f::RotationalFlow) = MatrixFlowState
 
-struct ManifoldVectorFlow <: VectorFlow #I'm specializing this, in case we want to try and handle others later
-    schedule::Function
-    manifold::AbstractManifold{ℝ}
+function BatchedState(xs::AbstractArray{T,N}, args...) where {T,N}
+    return BatchedState(nestedview(xs, N-1), args...)
 end
-ManifoldVectorFlow(manifold) = ManifoldVectorFlow(t -> t, manifold)
-statetype(f::ManifoldVectorFlow) = VectorFlowState
+
+function BatchedState(states::AbstractVector{<:State}, args...)
+    return BatchedState(VectorOfSimilarArrays(map(state -> flatarray(state), states)), args...)
+end
+
+Base.size(b::BatchedState) = size(b.xs)
+Base.getindex(b::BatchedState, i::Integer) = State(b.xs[i])
+Base.setindex!(b::BatchedState, i::Integer, v::State) = b.xs[i] = v.x
+
+Base.copy(b::BatchedState) = BatchedState(copy(b.xs), copy(b.mask))
+
+
+### Flow Behavior
+
+const EuclideanFlow = Flow{<:Euclidean}
+const RelaxedDiscreteFlow = Flow{<:ProbabilitySimplex}
+const RotationalFlow = Flow{<:SpecialOrthogonal}
+const LinearFlow = Union{EuclideanFlow,RelaxedDiscreteFlow}
+
+# for yeeting an array into higher dimensions
+shiftdims(x::AbstractArray, n::Integer) = reshape(x, ntuple(Returns(1), n)..., size(x)...)
+
+function interpolate(flow::Flow, x₀::State{T,N}, x₁::State{T,N}, t::Real) where {T,N}
+    t′ = flow.schedule(T(t))
+    γ = shortest_geodesic(flow.manifold, flatarray(x₀), flatarray(x₁))
+    return State(γ(t′))
+end
+
+function interpolate(flow::Flow, x₀::BatchedState{T,N}, x₁::BatchedState{T,N}, t::AbstractVector) where {T,N}
+    t′ = flow.schedule.(T.(t))
+    xₜ = BatchedState(similar(x₁.xs), x₀.mask .& x₁.mask)
+    for i in eachindex(xₜ)
+        xₜ[i] = interpolate(flow, x₀[i], x₁[i], t′[i])
+    end
+    return xₜ
+end
+
+function interpolate(flow::Union{EuclideanFlow,RelaxedDiscreteFlow}, x₀::BatchedState{T,N}, x₁::BatchedState{T,N}, t::AbstractVector) where {T,N}
+    t′ = shiftdims(flow.schedule.(T.(t)), N)
+    xₜ = BatchedState(t′ .* flatarray(x₁) + (1 .- t′) .* flatarray(x₀), x₀.mask .& x₁.mask)
+    return xₜ
+end
+
+function interpolate(flow::Flow{<:SpecialOrthogonal{3}}, x₀::BatchedState{T,N}, x₁::BatchedState{T,N}, t::AbstractVector) where {T,N}
+    t′ = flow.schedule.(T.(t))
+    display(size(flatarray(x₀)))
+    display(size(flatarray(x₁)))
+    display(size(t′))
+    xₜ = BatchedState(slerp_stack(flatarray(x₀), flatarray(x₁), t′), x₀.mask .& x₁.mask)
+    return xₜ
+end
+
+interpolate(flow, x₀, x₁, t::Real) = interpolate(flow, x₀, x₁, Fill(t, size(x₀)))
+
+
+### Perturbation
+#This throws inexact error for probability simplex sometimes.
 
 """
-    batch_flowstate(statetuple::Tuple{Vararg{AbstractArray}}, flowtuple::Tuple{Vararg{Flow}})
+    perturb!([rng=default_rng()], f::Flow, state, σ)
 
-Converts a tuple of abstract arrays and a tuple of Flows, into a tuple of Flow-appropriate FlowStates.
+Perturb the flow by a random amount, respecting the manifold, but do not change states where mask is false.
 """
-batch_flowstate(flowtuple::Tuple{Vararg{Flow}}, statetuple::Tuple{Vararg{AbstractArray}}) = Tuple([c(s) for (c,s) in zip(statetype.(flowtuple),statetuple)]) #No masking
-#Allows one mask per flow state
-#Adding this copy in for a hunch about a GPU issue...
-batch_flowstate(flowtuple::Tuple{Vararg{Flow}}, statetuple::Tuple{Vararg{AbstractArray}}, masktuple::Tuple{Vararg{AbstractArray}}) = Tuple([c(s,copy(m)) for (c,s,m) in zip(statetype.(flowtuple),statetuple, masktuple)])
-#One mask which gets used for all flow states
-batch_flowstate(flowtuple::Tuple{Vararg{Flow}}, statetuple::Tuple{Vararg{AbstractArray}}, m::AbstractArray) = Tuple([c(s,copy(m)) for (c,s) in zip(statetype.(flowtuple),statetuple)])
-#Test these second two!
-export batch_flowstate
-
-#Making these wrapper types GPU compatible
-#Adapt.adapt_structure(to, A::FlowState) = typeof(A)(Adapt.adapt(to, A.x), Adapt.adapt(to, A.mask))
-#For some reason the above was triggering scalarindexing!?
-Adapt.adapt_structure(to, A::MatrixFlowState) = MatrixFlowState(Adapt.adapt(to, A.x), Adapt.adapt(to, A.mask))
-Adapt.adapt_structure(to, A::VectorFlowState) = VectorFlowState(Adapt.adapt(to, A.x), Adapt.adapt(to, A.mask))
-
-
-### Inheriting from AbstractArray, and definind cat behavior ###
-Base.size(A::FlowState) = size(A.x)
-Base.copy(A::FlowState) = typeof(A)(copy(A.x), copy(A.mask))
-Base.getindex(A::FlowState, i...) = A.x[i...]
-#Base.parent(A::FlowState) = A.x #Undecided on this one
-
-function Base.cat(arrays::VectorFlowState...; dims = 2) #Check that default works here!
-    if dims != 2
-        throw(ArgumentError("Only dims=2 supported for VectorFlowState"))
-    end
-    return VectorFlowState(cat([a.x for a in arrays]..., dims = 2), vcat([a.mask for a in arrays]...))
+function perturb!(rng::AbstractRNG, flow::Flow, state::State{T}, σ::Real) where T
+    # note from old code: this throws inexact error for probability simplex sometimes.
+    rv = rand(rng, flow.manifold, vector_at=state.x, σ=T(σ)) # Random vector in the tangent space
+    state.x .= exp(flow.manifold, state.x, rv) # Exponential map of rv
+    return state
 end
 
-function Base.cat(arrays::MatrixFlowState...; dims = 3)
-    if dims != 3
-        throw(ArgumentError("Only dims=3 supported for MatrixFlowState"))
-    end
-    return MatrixFlowState(cat([a.x for a in arrays]..., dims = 3), vcat([a.mask for a in arrays]...))
+function perturb!(rng::AbstractRNG, ::LinearFlow, state::State{T}, σ::Real) where T
+    state.x .+= T(σ) * randn(rng, T, size(state.x))
+    return state
 end
 
-##Tracking
-#Borrowing from Diffusions.jl
-struct NullTracker end
+function perturb!(rng::AbstractRNG, ::Flow{<:SpecialOrthogonal{3}}, state::State, σ::Real)
+    state.x .= state.x * randrot(rng, σ)
+    return state
+end
 
-track!(::NullTracker, t, xt, x̂1) = nothing
+function perturb!(rng::AbstractRNG, ::LinearFlow, states::BatchedState{T,N}, σ::Real) where {T,N}
+    flatarray(states) .+= shiftdims(σ * states.mask, N) .* randn(rng, T, size(flatarray(states)))
+    return states
+end
 
-struct Tracker
+function perturb!(rng::AbstractRNG, flow::Flow, states::BatchedState,  σ::Real)
+    foreach(states, states.mask) do state, m
+        m && perturb!(rng, flow, state, σ)
+    end
+    return states
+end
+
+perturb!(flow, state, σ) = perturb!(Random.default_rng(), flow, state, σ)
+
+
+### Relaxation
+
+struct Relaxation{E<:AbstractMatrix,T}
+    k::Int
+    embeddings::E
+    token_to_index::Dict{T,Int}
+    index_to_token::Dict{Int,T}
+end
+
+initial_embeddings(n::Integer, T::Type=Float32) = softmax(collect(T(5+log(n))*I(n)))
+
+function Relaxation(
+    tokens::AbstractVector,
+    embeddings::AbstractMatrix = initial_embeddings(length(tokens))
+)
+    @assert allunique(tokens)
+    k = length(tokens)
+    token_to_index = Dict(zip(tokens, 1:k))
+    index_to_token = Dict(zip(1:k, tokens))
+    return Relaxation(k, embeddings, token_to_index, index_to_token)
+end
+
+relax(r::Relaxation, tokens::AbstractVector) =
+    BatchedState(r.embeddings[:, [r.token_to_index[token] for token in tokens]])
+
+function unrelax(r::Relaxation, states::BatchedState{T,1}, L::Real=2) where T
+    tokens = map(eachindex(states)) do i
+        p = flatarray(states[i])
+        j = argmin(vec(sum((r.embeddings .- p).^L, dims=1)))
+        r.index_to_token[j]
+    end
+    return tokens
+end
+
+
+### Generative Flow
+
+#Flow for tuples, where the model must take a tuple, do joint inference, and return a tuple of data arrays.
+"""
+    flow(f::Flow, x₀::State, model, steps=100, tracker=NullTracker())
+
+Samples from the distribution implied by the model under the Flow f, starting from x0. f and x0 can also be tuples, with matches components.
+steps can be an integer, in which case a linear schedule is used, or a vector of times to specify the schedule. If a tracker is supplied, the sample paths are tracked.
+"""
+function flow(
+    f::Tuple{Vararg{Flow}}, X₀::Tuple{Vararg{BatchedState{T}}}, model, steps::AbstractVector;
+    tracker::Function=Returns(nothing)
+) where T
+    Xₜ = copy(X₀) # capitalized cause tuple
+    steps = map(T, steps)
+    for (s₁, s₂) in zip(steps, steps[begin+1:end])
+        t = (s₁ + s₂) / 2
+        Δt = s₂ - s₁
+        ts = Tuple(t .* ones(T, 1, length(x₀)) for x₀ in X₀)
+        X̂₁ = copy(X₀)
+        res = model(ts, Xₜ)
+        foreach(res, X̂₁) do r, x̂₁
+            flatarray(x̂₁) .= r
+        end
+        tracker(t, Xₜ, X̂₁)
+        Xₜ = isapprox(t, 1) ? X̂₁ : interpolate(f, Xₜ, X̂₁, min(1, Δt/(1-t)))
+    end
+    X₁ = Xₜ
+    return X₁
+end
+
+flow(f, x0, model, steps::Integer=100; kwargs...) =
+    flow(f, x0, model, [range(0, 1, steps); 1]; kwargs...)
+
+flow(f::Flow, x0::BatchedState, model, args...; kwargs...) =
+    flow((f,), (x0,), (t,xt) -> (model(t[1],xt[1]),), args...; kwargs...)[1]
+
+
+# GPU compatibility
+
+Adapt.adapt_structure(to, state::State) = State(Adapt.adapt(to, state.x))
+Adapt.adapt_structure(to, states::BatchedState) = BatchedState(Adapt.adapt(to, states.xs), Adapt.adapt(to, states.mask))
+
+
+# Tracking
+
+struct Tracker <: Function
     t::Vector
     xt::Vector
     x̂1::Vector
@@ -108,7 +217,7 @@ end
 
 Tracker() = Tracker([], [], [])
 
-function track!(tracker::Tracker, t, xt, x̂1)
+function (tracker::Tracker)(t, xt, x̂1)
     push!(tracker.t, t)
     push!(tracker.xt, xt)
     push!(tracker.x̂1, x̂1)
@@ -116,388 +225,5 @@ function track!(tracker::Tracker, t, xt, x̂1)
 end
 
 function stack_tracker(tracker, field; tuple_index = 1)
-    return stack([data[tuple_index] for data in getproperty(tracker,field)])
+    return stack([data[tuple_index] for data in getproperty(tracker, field)])
 end
-
-export Tracker, stack_tracker
-
-
-#####################
-### Flow Behavior ###
-#####################
-
-### Interpolation ### - Doesn't need to happen on GPU
-#The mask is NOT taken into account when interpolating the states. You need to deal with that yourself.
-"""
-    interpolate(f::Flow, x0::A, x1::A, t::T) where A::FlowState{T}
-
-Geodesic interpolation between two `FlowState`s. `t`` must be a scalar, or row vector.
-The flow states are interpolated regardless of the mask, and the output mask is the logical AND of the two input masks.
-"""
-function interpolate(f::Union{EuclideanFlow,RelaxedDiscreteFlow}, x0::VectorFlowState{T}, x1::VectorFlowState{T}, t) where T
-    size(t, 1) != 1 && throw(ArgumentError("t must be a row vector or a scalar"))
-    t = f.schedule.(T.(t))
-    return VectorFlowState(t .* x1.x .+ (1 .- t) .* x0.x, x0.mask .& x1.mask)
-end
-
-function interpolate(f::RotationalFlow, x0::MatrixFlowState{T}, x1::MatrixFlowState{T}, t) where T
-    size(t, 1) != 1 && throw(ArgumentError("t must be a row vector or a scalar"))
-    t = f.schedule.(T.(t))
-    #Slerp interpolation of the states, and logical AND of the masks
-    return MatrixFlowState(slerp_stack(x0.x, x1.x, t), x0.mask .& x1.mask)
-end
-
-function interpolate(f::ManifoldVectorFlow, x0::VectorFlowState{T}, x1::VectorFlowState{T}, t) where T
-    size(t, 1) != 1 && throw(ArgumentError("t must be a row vector or a scalar"))
-    t = ones(1,size(x0.x, 2)) .* f.schedule.(T.(t))
-    new_x = copy(x1.x)
-    for i in 1:size(x0,2)
-        γ = shortest_geodesic(f.manifold, x0[:,i], x1[:,i])
-        new_x[:,i] .= γ(t[1,i])
-    end
-    return VectorFlowState(new_x, x0.mask .& x1.mask)
-end
-
-#Handles a tuple of FlowStates into interpolate. t is either a scalar, or a Tuple of row vectors
-function interpolate(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, x1::Tuple{Vararg{FlowState}}, t::Union{Real, Tuple{Vararg{Real}}})
-    return interpolate.(f, x0, x1, t)
-end
-
-#=
-function x0x1_to_xt(flowtuple::Tuple{Vararg{Flow}}, x1tuple::Tuple{Vararg{AbstractArray}}, x0tuple::Tuple{Vararg{AbstractArray}}, t::Real)
-    x1 = batch_flowstate(flowtuple, x1tuple)
-    x0 = batch_flowstate(flowtuple, x0tuple)
-    return interpolate(x0, x1, t)
-end
-=#
-
-### Perturbation ### - Doesn't need to happen on GPU
-"""
-    perturb!(f::Flow, x::A, σ::T) where A::FlowState{T}
-
-Perturb the flow by a random amount, respecting the manifold, but do not change states where mask is false.
-"""
-function perturb!(f::Union{EuclideanFlow,RelaxedDiscreteFlow}, x::VectorFlowState{T}, σ::Real) where T
-    x.x[:,x.mask] .= x.x[:,x.mask] .+ σ .* randn(T, size(x.x[:,x.mask]))
-end
-
-function perturb!(f::RotationalFlow, x::MatrixFlowState{T}, σ::Real) where T
-    for i in 1:size(x.x,3)
-        if x.mask[i]
-            x.x[:,:,i] .=  x.x[:,:,i] * Matrix(randrot(σ))
-        end
-    end
-end
-
-#This throws inexact error for probability simplex sometimes.
-function perturb!(f::ManifoldVectorFlow, x::VectorFlowState{T}, σ::Real) where T
-    for i in 1:size(x.x,2)
-        if x.mask[i]
-            rv = rand(f.manifold, vector_at=x.x[:,i], σ=σ) #Random vector in the tangent space
-            x.x[:,i] .= exp(f.manifold,x.x[:,i],rv) #Exponential map of rv
-        end
-    end
-end
-
-
-#######################
-### Generative Flow ###
-#######################
-
-#Flow for tuples, where the model must take a tuple, do joint inference, and return a tuple of data matrices.
-"""
-    flow(f::Flow, x0::FlowState, model; steps = 100, tracker = NullTracker())
-
-Samples from the distribution implied by the model under the Flow f, starting from x0. f and x0 can also be tuples, with matches components.
-steps can be an integer, in which case a linear schedule is used, or a vector of times to specify the schedule. If a tracker is supplied, the sample paths are tracked.
-"""
-function flow(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, model; steps = 100, tracker = NullTracker())
-    T = eltype(x0[1].x)
-    xt = copy.(x0)
-    if typeof(steps) <: Int
-        t_step = T((1/steps))
-        steps = vcat(0:t_step:1,[T(1)])
-    end
-    for i in 2:length(steps)
-        t = (steps[i]+steps[i-1])/2 #midpoint
-        step = steps[i] - steps[i-1]
-        ts = Tuple([t .* ones(eltype(c.x), 1, size(c.x)[end]) for c in x0])
-        x̂1 = copy.(x0)
-        res = model(ts,xt)
-        for i in 1:length(res)
-            x̂1[i].x .= res[i]
-        end
-        track!(tracker, t, xt, x̂1)
-        if isapprox(t,1)
-            @show "Reached!"
-            xt = x̂1
-        else
-            xt = interpolate(f, xt, x̂1, min(1,step/(1-t)))
-        end
-    end
-    return xt
-end
-flow(f::Flow, x0::FlowState, model; steps = 100, tracker = NullTracker()) = flow((f,), (x0,), (t,xt) -> (model(t[1],xt[1]), ), steps = steps, tracker = tracker)[1]
-    
-
-######################################################################
-### Loss Functions - Need to be stable, GPU-friendly, autodiffable ###
-######################################################################
-
-safe_sqrt(x::T) where T = x < 0 ? T(0) : sqrt(x)
-
-### GPU-friendly logarithmic maps for manifolds ###
-#=
-function Base.log(::ProbabilitySimplex, p_arr::AbstractMatrix, q_arr::AbstractMatrix)
-    eps = eltype(p_arr)(1e-6)
-    z = safe_sqrt.(p_arr .* q_arr)
-    s = clamp.(sum(z, dims=1), -1, 1)
-    return 2 .* acos.(s) ./ safe_sqrt.(eps + 1 .- s.^2) .* (z .- s .* p_arr)
-end
-=#
-
-arccos_approx(x::T) where T = T(1.5707963) - x - x^3/6
-
-floor_eps(x,eps) = x < eps ? eps : x
-
-### Version without the arccos and denominator instability
-function approx_stable_log(::ProbabilitySimplex, p_arr::AbstractMatrix, q_arr::AbstractMatrix)
-    eps = eltype(p_arr)(0.0001)
-    z = safe_sqrt.(p_arr .* q_arr)
-    s = sum(z, dims=1)
-    return (2 .* arccos_approx.(s) ./ (eps .+ safe_sqrt.((eps + 1) .- s.^2))) .* (z .- s .* p_arr)
-end
-
-#---Tested for prabability simplex---
-#This version is completely unstable
-#=
-logrtr1 = log(rt.manifold, rt.x, r1.x)
-logrtr̂1 = log(rt.manifold, rt.x, r̂1)
-sq = clamp.(sum(abs2.(logrtr1 .- logrtr̂1), dims = 1), 0, 1)
-return mean((r1.mask .* sq) ./ ((1+eps) .- t).^2)
-=#
-
-#Trying just log CE between targets and predictions
-#Not good
-#-mean(log.(sum(r̂1 .* r1, dims = 1)))
-
-#Vanilla CE. Worst so far
-#return -mean(r̂1 .* r1)
-
-#Using stable log map.
-#Not too bad, actually!
-#NOTE: got NaNs. Trying another
-
-#=
-logrtr1 = approx_stable_log(f.manifold, rt.x, r1.x)
-logrtr̂1 = approx_stable_log(f.manifold, rt.x, r̂1)
-sq = sum(abs2.(logrtr1 .- logrtr̂1), dims = 1)
-return mean((r1.mask .* sq) ./ ((1+eps) .- t).^pow)
-=#
-
-#Trying Bhattacharyya
-#Does better than log CE, but still not great
-#return mean(abs2.(safe_sqrt.(r̂1) .- safe_sqrt.(r1.x)))
-
-#=
-sq = sum(abs2.(safe_sqrt.(r̂1) .- safe_sqrt.(r1.x)), dims = 1)
-return mean((r1.mask .* sq) ./ ((1+eps) .- t).^pow)
-=#
-
-#Trying the manifold distance between p and q.
-#=
-@inbounds for i in eachindex(p, q)
-    sumsqrt += sqrt(p[i] * q[i])
-end
-return 2 * acos(sumsqrt)
-=#
-#sq = T(2) .* arccos_approx.(sum(safe_sqrt.(r̂1 .* r1.x), dims = 1))
-#return mean((r1.mask .* sq) ./ ((1+eps) .- t).^pow)
-
-#This does not do well on the one real task I've tried it on:
-function loss_func(
-    m::ProbabilitySimplex, #manifold
-    r̂1::AbstractArray{T}, #Predicted end point (as array)
-    r1::VectorFlowState{T}, #True end point
-    rt::VectorFlowState{T}, #Starting point
-    t::Union{T,AbstractArray{T,2}},
-    eps,
-    pow) where T <: Real
-    eps2 = T(0.0001)
-    sq = T(2) .* arccos_approx.(sum(sqrt.(floor_eps.(r̂1,eps2) .* floor_eps.(r1.x,eps2)), dims = 1))
-    return sq ./ ((1+eps) .- t).^pow
-    #return mean((r1.mask .* sq) ./ ((1+eps) .- t).^pow) / (T(mean(r1.mask))  + T(0.0001f0))
-end
-
-#Notice how the non-trivial manifold loss requires an extra point
-function loss(
-    f::ManifoldVectorFlow, #Flow
-    r̂1::AbstractArray{T}, #Predicted end point (as array)
-    r1::VectorFlowState{T}, #True end point
-    rt::VectorFlowState{T}, #Starting point
-    t::Union{T,AbstractArray{T,2}};
-    masked = false,
-    eps = T(0.01), pow = 2
-    ) where T <: Real
-    size(t, 1) != 1 && throw(ArgumentError("t must be a row vector"))
-    ndims(r1.mask) != 1 && throw(ArgumentError("mask must be a columns vector"))
-
-    #Now set up to allow dispatching to different manifolds
-    site_losses = loss_func(f.manifold, r̂1, r1, rt, t, eps, pow)
-
-    #@show size(site_losses)
-    #@show size(r1.mask' .* site_losses)
-
-    if masked
-        return mean(r1.mask' .* site_losses) / (T(mean(r1.mask)) + T(0.0001f0))
-    else
-        return mean(site_losses)
-    end
-    #return loss_func(f.manifold, r̂1, r1, rt, t, eps, pow)
-end
-
-#In these, t needs to be a vector, because GNNs (our main use case) batch by concatenating
-#and we want to batch different t values
-
-#These are reparameterized so that we're predicting the true (t=1) state, not the change in state
-#It might have been my ODE, but in my small testing this wasn't nearly as good
-#For Euclidean, at least, we can train a model that learns the change in state, but it
-#would be confusing to combine that with a model that learns the terminal rotation
-#and less amenable to pre-training
-
-#Note: the model estimates are just regular arrays, not FlowStates, because we don't want too
-#much casting etc with what comes off the GPU
-function loss(
-    f::Union{EuclideanFlow,RelaxedDiscreteFlow},
-    x̂1::AbstractArray{T},
-    x1::VectorFlowState{T},
-    t::Union{T,AbstractArray{T,2}};
-    masked = false,
-    eps = T(0.01), pow = 2
-    ) where T <: Real
-    size(t, 1) != 1 && throw(ArgumentError("t must be a row vector"))
-    ndims(x1.mask) != 1 && throw(ArgumentError("mask must be a columns vector"))
-
-    site_losses = mean((x̂1 .- x1.x).^2, dims = 1) ./ ((1+eps) .- t).^pow
-    #@show size(site_losses)
-    #@show size(x1.mask' .* site_losses)
-
-    if masked
-        return mean(x1.mask' .* site_losses) / (T(mean(x1.mask)) + T(0.0001f0))
-    else
-        return mean(site_losses)
-    end
-    #return mean(x1.mask' .* site_losses) / (T(mean(x1.mask)) + T(0.0001f0))
-end
-
-
-"""
-    loss(f::Flow, x̂1::A, x1::A, xt::A, t::T; masked = false, eps = T(0.01), pow = 2) where A::FlowState{T}
-
-Compute a loss between the predicted end point x̂1 and the true end point x1, given the starting point xt and the time t.
-These should be considered as "default" losses, and you might need to adapt and adjust them for your problem.
-"""
-function loss(
-    f::Union{EuclideanFlow,RelaxedDiscreteFlow},
-    x̂1::AbstractArray{T},
-    x1::VectorFlowState{T},
-    xt::VectorFlowState{T},
-    #The Euclidean case doesn't actually require the current state (xt) but we include it in case we want things to work when we don't know what kind of Flow we're using
-    t::Union{T,AbstractArray{T,2}};
-    masked = false,
-    eps = T(0.01), pow = 2
-    ) where T <: Real
-    return loss(f, x̂1, x1, t, eps = eps, pow = pow, masked = masked)
-    #mse((x1hat - xt)/(1-t),(x1 - x0))
-    #return mean(x1.mask' .* mean((((x̂1 .- xt.x) ./ ((1+eps) .- t)) .- ((x1.x .- xt.x) ./ ((1+eps) .- t))) .^ 2 , dims = 1)) / (T(mean(x1.mask)) + T(0.0001f0))
-end
-
-
-
-#Trying the axisangle trick from https://github.com/jasonkyuyim/se3_diffusion/blob/53359d71cfabc819ffaa571abd2cef736c871a5d/experiments/train_se3_diffusion.py#L595
-#This has given the best performance, empirically, on toy tests and large models
-function loss(
-    f::RotationalFlow,
-    r̂1::AbstractArray{T}, #Predicted end point (as array)
-    r1::MatrixFlowState{T}, #True end point
-    rt::MatrixFlowState{T}, #Starting point
-    t::Union{T,AbstractArray{T,2}};
-    masked = false,
-    eps = T(0.01), pow = 2
-    ) where T <: Real
-    size(t, 1) != 1 && throw(ArgumentError("t must be a row vector"))
-    ndims(r1.mask) != 1 && throw(ArgumentError("mask must be a columns vector"))
-
-    rtT = batched_transpose(rt.x)
-    r̂an,r̂ax = angleaxis_stack(batched_mul(r̂1, rtT))
-    ran,rax = angleaxis_stack(batched_mul(r1.x, rtT))
-    sq = compute_rot_loss_vec(r̂an,ran,r̂ax,rax) ./ ((1+eps) .- t).^pow
-    #@show size(sq)
-    #@show size(r1.mask' .* sq)
-
-    if masked
-        return mean(r1.mask' .* sq) / (T(mean(r1.mask)) + T(0.0001f0))
-    else
-        return mean(sq)
-    end
-    #return mean((r1.mask .* sq) ./ ((1+eps) .- t).^pow) / (T(mean(r1.mask)) + T(0.0001f0))
-end
-
-
-
-#########################################################
-### Glue between discrete states and continuous Flows ###
-##      Note: I've got no idea if this is sensible     ##
-#########################################################
-
-#Handles discrete tokens and their conversino to continuous points
-struct Relaxation{T, A<:AbstractArray{T, 2}}
-    k::Int
-    m::A
-    #σ::T
-    alph2ind::Dict
-    ind2alph::Dict
-end
-
-
-"""
-    Relaxation(alph::AbstractVector; T=Float32, m = matrix_that_maps_index_to_vector)
-
-Creates a Relaxation struct, which maps discrete tokens to continuous points and back again.
-"""
-function Relaxation(alph::AbstractVector; T=Float32, m = softmax(Matrix(Float32(5+log(length(alph)))*I, length(alph), length(alph))) )#, σ = T(0.1),)
-    #This weirdness on the "m" is to avoid the corners, in case you're using a manifold.
-    k = size(alph, 1) #Alphabet length
-    alph2ind = Dict(zip(alph, 1:k))
-    ind2alph = Dict(zip(1:k, alph))
-    return Relaxation(k, m, #=T(σ),=# alph2ind, ind2alph)
-end
-
-"""
-    relax(seq::AbstractVector, r::Relaxation)
-
-Converts a sequence of discrete tokens to a matrix (where each column can be thought of as a multivariant "point").
-"""
-function relax(seq, r::Relaxation)
-    seq = [r.alph2ind[a] for a in seq]
-    c = r.m[:, seq]
-    return c # .+ randn(typeof(r.σ),size(c)) .* r.σ
-end
-
-#=One hot version
-function relax(seq::OneHotArray, r::Relaxation)
-    c = AAmap.m * seq #double-check this mat mul
-    return c .+ randn(typeof(r.σ),size(c)) .* r.σ
-end
-=#
-
-#Finds the index of the closest column in r.m to each column in points
-"""
-    unrelax(points::AbstractArray, r::Relaxation)
-
-Converts a continuous matrix (where each column can be thought of as a multivariant "point") to a sequence of discrete tokens.
-""" 
-function unrelax(points::AbstractArray, r::Relaxation; L = 2)
-    return [r.ind2alph[argmin(sum((r.m .- points[:,i]).^L, dims = 1)[:])] for i in 1:size(points, 2)]
-end
-
