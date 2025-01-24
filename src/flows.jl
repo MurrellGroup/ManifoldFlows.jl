@@ -235,8 +235,7 @@ steps can be an integer, in which case a linear schedule is used, or a vector of
 function flow(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, model; steps = 100, tracker = NullTracker(), rng = Random.GLOBAL_RNG)
     xt = copy.(x0)
     if steps isa Integer
-        t_step = Float32(1/steps)
-        steps = [0:t_step:1; 1]
+        steps = range(0, 1f0, length = steps)
     end
     for i in 2:length(steps)
         t = (steps[i]+steps[i-1])/2 #midpoint
@@ -262,9 +261,9 @@ function takestep(rng, f::DiscreteFlow, xt, out, t, step, tracker)
     # track the current state and the predicted logits (should track probs instead?)
     track!(tracker, t, xt, MatrixFlowState(out, xt.mask))
     # forward velocity u_t(⋅, Xt) (equation 24)
-    velo = (κ̇(t) / (1 - κ(t))) .* (softmax(out) - xt)
+    velo = (κ̇(t) / (1 - κ(t))) .* (softmax(out) - xt.x)
     p = xt + step * velo
-    MatrixFlowState(randcat(rng, p ./ sum(p, dims = 1)))
+    MatrixFlowState(randcat(rng, p ./ sum(p, dims = 1)), xt.mask)
 end
 
 function randcat(rng::AbstractRNG, p::AbstractArray)
