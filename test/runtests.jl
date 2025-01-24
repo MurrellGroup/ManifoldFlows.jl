@@ -84,10 +84,16 @@ end
     x1 = flow(f, x0, model)
     @test size(x1) == size(x0)
 
+    f = DiscreteFlow()
+    x0 = MatrixFlowState(onehotbatch(rand(1:8, 4, 10), 1:8))
+    model(t, xt) = randn(Float32, size(xt))
+    x1 = flow(f, x0, model)
+    @test size(x1) == size(x0)
+
     f1 = EuclideanFlow()
     x01 = VectorFlowState(zeros(Float32, 2, 10))
-    f2 = EuclideanFlow()
-    x02 = VectorFlowState(zeros(Float32, 3, 15))
+    f2 = DiscreteFlow()
+    x02 = MatrixFlowState(onehotbatch(rand(1:8, 4, 10), 1:10))
     model(t, (xt1, xt2)) = (randn(Float32, size(xt1)), randn(Float32, size(xt2)))
     x11, x12 = flow((f1, f2), (x01, x02), model)
     @test size(x11) == size(x01)

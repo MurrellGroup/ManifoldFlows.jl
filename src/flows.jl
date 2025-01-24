@@ -88,6 +88,9 @@ Base.copy(A::FlowState) = typeof(A)(copy(A.x), copy(A.mask))
 Base.getindex(A::FlowState, i...) = A.x[i...]
 #Base.parent(A::FlowState) = A.x #Undecided on this one
 
+# OneHotArrays make a copy of the Array type when the copy method is called, so we need to make sure that it won't change the type of the array.
+Base.copy(A::MatrixFlowState{Bool, <: OneHotArray}) = typeof(A)(typeof(A.x)(copy(A.x.indices), A.x.nlabels), copy(A.mask))
+
 function Base.cat(arrays::VectorFlowState...; dims = 2) #Check that default works here!
     if dims != 2
         throw(ArgumentError("Only dims=2 supported for VectorFlowState"))
@@ -229,19 +232,20 @@ end
 Samples from the distribution implied by the model under the Flow f, starting from x0. f and x0 can also be tuples, with matches components.
 steps can be an integer, in which case a linear schedule is used, or a vector of times to specify the schedule. If a tracker is supplied, the sample paths are tracked.
 """
-function flow(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, model; steps = 100, tracker = NullTracker())
-    T = eltype(x0[1].x)
+function flow(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, model; steps = 100, tracker = NullTracker(), rng = Random.GLOBAL_RNG)
     xt = copy.(x0)
-    if typeof(steps) <: Int
-        t_step = T((1/steps))
-        steps = vcat(0:t_step:1,[T(1)])
+    if steps isa Integer
+        t_step = Float32(1/steps)
+        steps = [0:t_step:1; 1]
     end
     for i in 2:length(steps)
         t = (steps[i]+steps[i-1])/2 #midpoint
         step = steps[i] - steps[i-1]
         ts = Tuple([t .* ones(eltype(c.x), 1, size(c.x)[end]) for c in x0])
-        x̂1 = copy.(x0)
         res = model(ts,xt)
+        xt = takestep.(rng, f, xt, res, t, step#=, tracker=#)
+        #=
+        x̂1 = copy.(x0)
         for i in 1:length(res)
             x̂1[i].x .= res[i]
         end
@@ -250,13 +254,31 @@ function flow(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, model; steps
             @show "Reached!"
             xt = x̂1
         else
-            xt = interpolate(f, xt, x̂1, min(1,step/(1-t)))
+            xt = makestep(rng, f, xt, x̂1, t, step)
         end
+        =#
     end
     return xt
 end
 flow(f::Flow, x0::FlowState, model; steps = 100, tracker = NullTracker()) = flow((f,), (x0,), (t,xt) -> (model(t[1],xt[1]), ), steps = steps, tracker = tracker)[1]
 
+function takestep(_, f::Flow, xt, out, t, step#=, tracker=#)
+    x̂1 = copy(xt)
+    x̂1.x .= out
+    #track!(tracker, t, xt, x̂1)
+    interpolate(f, xt, x̂1, min(1, step / (1 - t)))
+end
+
+function takestep(rng, f::DiscreteFlow, xt, out, t, step#=, tracker=#)
+    κ(t) = f.schedule(t)
+    κ̇(t) = derivative(κ, t)
+    # forward velocity u_t(⋅, Xt) (equation 24)
+    velo = (κ̇(t) / (1 - κ(t))) .* (softmax(out) - xt)
+    p = xt + step * velo
+    MatrixFlowState(randcat(rng, p ./ sum(p, dims = 1)))
+end
+
+#=
 function flow(f::DiscreteFlow, x0::MatrixFlowState, model; steps = 100, tracker = NullTracker(), rng = Random.GLOBAL_RNG)
     κ(t) = f.schedule(t)
     κ̇(t) = derivative(κ, t)
@@ -273,6 +295,7 @@ function flow(f::DiscreteFlow, x0::MatrixFlowState, model; steps = 100, tracker 
     end
     xt
 end
+=#
 
 function randcat(rng::AbstractRNG, p::AbstractArray)
     x = zeros(Int, Base.tail(size(p)))

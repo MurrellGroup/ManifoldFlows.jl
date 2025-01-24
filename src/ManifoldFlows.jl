@@ -10,7 +10,7 @@ module ManifoldFlows
     using Adapt: Adapt
     using NNlib
     using ForwardDiff: derivative
-    using OneHotArrays: onecold, onehotbatch
+    using OneHotArrays: OneHotArray, onecold, onehotbatch
 
 include("flows.jl")
 include("geometry.jl")
