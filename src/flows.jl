@@ -242,60 +242,30 @@ function flow(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, model; steps
         t = (steps[i]+steps[i-1])/2 #midpoint
         step = steps[i] - steps[i-1]
         ts = Tuple([t .* ones(eltype(c.x), 1, size(c.x)[end]) for c in x0])
-        res = model(ts,xt)
-        xt = takestep.(rng, f, xt, res, t, step#=, tracker=#)
-        #=
-        x̂1 = copy.(x0)
-        for i in 1:length(res)
-            x̂1[i].x .= res[i]
-        end
-        track!(tracker, t, xt, x̂1)
-        if isapprox(t,1)
-            @show "Reached!"
-            xt = x̂1
-        else
-            xt = makestep(rng, f, xt, x̂1, t, step)
-        end
-        =#
+        res = model(ts, xt)
+        xt = takestep.(rng, f, xt, res, t, step, (tracker,))
     end
     return xt
 end
 flow(f::Flow, x0::FlowState, model; steps = 100, tracker = NullTracker()) = flow((f,), (x0,), (t,xt) -> (model(t[1],xt[1]), ), steps = steps, tracker = tracker)[1]
 
-function takestep(_, f::Flow, xt, out, t, step#=, tracker=#)
+function takestep(_, f::Flow, xt, out, t, step, tracker)
     x̂1 = copy(xt)
     x̂1.x .= out
-    #track!(tracker, t, xt, x̂1)
+    track!(tracker, t, xt, x̂1)
     interpolate(f, xt, x̂1, min(1, step / (1 - t)))
 end
 
-function takestep(rng, f::DiscreteFlow, xt, out, t, step#=, tracker=#)
+function takestep(rng, f::DiscreteFlow, xt, out, t, step, tracker)
     κ(t) = f.schedule(t)
     κ̇(t) = derivative(κ, t)
+    # track the current state and the predicted logits (should track probs instead?)
+    track!(tracker, t, xt, MatrixFlowState(out, xt.mask))
     # forward velocity u_t(⋅, Xt) (equation 24)
     velo = (κ̇(t) / (1 - κ(t))) .* (softmax(out) - xt)
     p = xt + step * velo
     MatrixFlowState(randcat(rng, p ./ sum(p, dims = 1)))
 end
-
-#=
-function flow(f::DiscreteFlow, x0::MatrixFlowState, model; steps = 100, tracker = NullTracker(), rng = Random.GLOBAL_RNG)
-    κ(t) = f.schedule(t)
-    κ̇(t) = derivative(κ, t)
-    xt = copy(x0.x)
-    timesteps = range(0, 1f0, length = steps)
-    for i in firstindex(timesteps):lastindex(timesteps)-1
-        t = timesteps[i]
-        track!(tracker, t, xt, nothing)
-        logits = model(fill(t, 1, size(xt, ndims(xt))), xt)
-        # forward velocity u_t(⋅, Xt) (equation 24)
-        velo = (κ̇(t) / (1 - κ(t))) .* (softmax(logits) - xt)
-        p = xt + (timesteps[i+1] - t) * velo
-        xt = randcat(rng, p ./ sum(p, dims = 1))
-    end
-    xt
-end
-=#
 
 function randcat(rng::AbstractRNG, p::AbstractArray)
     x = zeros(Int, Base.tail(size(p)))
