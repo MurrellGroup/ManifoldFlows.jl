@@ -4,7 +4,6 @@ using Rotations
 using Random
 using OneHotArrays: onecold, onehotbatch
 
-#=
 @testset "Geometry" begin
     Random.seed!(3)
     A = stack([Matrix(rand(QuatRotation)) for i in 1:10])
@@ -13,10 +12,8 @@ using OneHotArrays: onecold, onehotbatch
     @test isapprox(ManifoldFlows.slerp_stack(A,B,0.0), A)
     @test isapprox(ManifoldFlows.slerp_stack(A,B,1.0), B)
 end
-=#
 
 @testset "Flows" begin
-    #=
     Random.seed!(3)
     f = EuclideanFlow()
     x0 = VectorFlowState(zeros(Float32,2,10))
@@ -57,7 +54,6 @@ end
     @test typeof(loss(Mf,Mx0.x,Mx1,Mxt,0.1f0)) == Float32
 
     @test all(isapprox.(interpolate((f,Mf),(x0,Mx0), (x1,Mx1), 0.5) , (interpolate(f,x0, x1, 0.5),interpolate(Mf,Mx0, Mx1, 0.5))))
-    =#
 
     f = DiscreteFlow()
     k = 8  # the number of discrete states
@@ -77,16 +73,16 @@ end
     @test sum(onecold(xt.x)[diff] .== onecold(x1.x)[diff]) / sum(diff) ≈ 0.3 atol=0.05
 end
 
-@testset "Samples" begin
+@testset "Inference" begin
     f = EuclideanFlow()
     x0 = VectorFlowState(zeros(Float32, 2, 10))
-    model(t, xt) = randn(Float32, size(xt))
+    model = (t, xt) -> randn(Float32, size(xt))
     x1 = flow(f, x0, model)
     @test size(x1) == size(x0)
 
     f = DiscreteFlow()
     x0 = MatrixFlowState(onehotbatch(rand(1:8, 4, 10), 1:8))
-    model(t, xt) = randn(Float32, size(xt))
+    model = (t, xt) -> randn(Float32, size(xt))
     x1 = flow(f, x0, model)
     @test size(x1) == size(x0)
 
@@ -94,7 +90,7 @@ end
     x01 = VectorFlowState(zeros(Float32, 2, 10))
     f2 = DiscreteFlow()
     x02 = MatrixFlowState(onehotbatch(rand(1:8, 4, 10), 1:10))
-    model(t, (xt1, xt2)) = (randn(Float32, size(xt1)), randn(Float32, size(xt2)))
+    model = (t, (xt1, xt2)) -> (randn(Float32, size(xt1)), randn(Float32, size(xt2)))
     x11, x12 = flow((f1, f2), (x01, x02), model)
     @test size(x11) == size(x01)
     @test size(x12) == size(x02)
