@@ -492,6 +492,12 @@ function loss(
     #return mean((r1.mask .* sq) ./ ((1+eps) .- t).^pow) / (T(mean(r1.mask)) + T(0.0001f0))
 end
 
+loss(
+    _::DiscreteFlow,
+    x̂1::AbstractArray,   # logits
+    x1::MatrixFlowState, # one-hot
+) = mean(.-sum(x1 .* logsoftmax(x̂1; dims = 1); dims = 1))
+
 
 
 #########################################################
