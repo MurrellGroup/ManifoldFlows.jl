@@ -53,6 +53,14 @@ end
 ManifoldVectorFlow(manifold) = ManifoldVectorFlow(t -> t, manifold)
 statetype(f::ManifoldVectorFlow) = VectorFlowState
 
+# Discrete Flow Matching (https://arxiv.org/abs/2407.15595)
+struct DiscreteFlow <: VectorFlow
+    schedule::Function
+end
+DiscreteFlow() = DiscreteFlow(t -> t)
+# States are represented by one-hot vectors, and hence multi-dimensional states are represented by matrices.
+statetype(::DiscreteFlow) = MatrixFlowState
+
 """
     batch_flowstate(statetuple::Tuple{Vararg{AbstractArray}}, flowtuple::Tuple{Vararg{Flow}})
 
@@ -79,6 +87,9 @@ Base.size(A::FlowState) = size(A.x)
 Base.copy(A::FlowState) = typeof(A)(copy(A.x), copy(A.mask))
 Base.getindex(A::FlowState, i...) = A.x[i...]
 #Base.parent(A::FlowState) = A.x #Undecided on this one
+
+# OneHotArrays make a copy of the Array type when the copy method is called, so we need to make sure that it won't change the type of the array.
+Base.copy(A::MatrixFlowState{Bool, <: OneHotArray}) = typeof(A)(typeof(A.x)(copy(A.x.indices), A.x.nlabels), copy(A.mask))
 
 function Base.cat(arrays::VectorFlowState...; dims = 2) #Check that default works here!
     if dims != 2
@@ -158,6 +169,16 @@ function interpolate(f::ManifoldVectorFlow, x0::VectorFlowState{T}, x1::VectorFl
     return VectorFlowState(new_x, x0.mask .& x1.mask)
 end
 
+function interpolate(f::DiscreteFlow, x0::MatrixFlowState{T}, x1::MatrixFlowState{T}, t) where T
+    size(t, 1) != 1 && throw(ArgumentError("t must be a row vector or a scalar"))
+    x0′ = onecold(x0.x)
+    x1′ = onecold(x1.x)
+    i = f.schedule.(t) .≥ rand(size(x0′)...)
+    xt = copy(x0′)
+    xt[i] .= x1′[i]
+    return MatrixFlowState(onehotbatch(xt, axes(x0, 1)), x0.mask .& x1.mask)
+end
+
 #Handles a tuple of FlowStates into interpolate. t is either a scalar, or a Tuple of row vectors
 function interpolate(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, x1::Tuple{Vararg{FlowState}}, t::Union{Real, Tuple{Vararg{Real}}})
     return interpolate.(f, x0, x1, t)
@@ -211,33 +232,61 @@ end
 Samples from the distribution implied by the model under the Flow f, starting from x0. f and x0 can also be tuples, with matches components.
 steps can be an integer, in which case a linear schedule is used, or a vector of times to specify the schedule. If a tracker is supplied, the sample paths are tracked.
 """
-function flow(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, model; steps = 100, tracker = NullTracker())
-    T = eltype(x0[1].x)
+function flow(f::Tuple{Vararg{Flow}}, x0::Tuple{Vararg{FlowState}}, model; steps = 100, tracker = NullTracker(), rng = Random.GLOBAL_RNG)
     xt = copy.(x0)
-    if typeof(steps) <: Int
-        t_step = T((1/steps))
-        steps = vcat(0:t_step:1,[T(1)])
+    if steps isa Integer
+        steps = range(0, 1f0, length = steps)
     end
     for i in 2:length(steps)
         t = (steps[i]+steps[i-1])/2 #midpoint
         step = steps[i] - steps[i-1]
         ts = Tuple([t .* ones(eltype(c.x), 1, size(c.x)[end]) for c in x0])
-        x̂1 = copy.(x0)
-        res = model(ts,xt)
-        for i in 1:length(res)
-            x̂1[i].x .= res[i]
-        end
-        track!(tracker, t, xt, x̂1)
-        if isapprox(t,1)
-            @show "Reached!"
-            xt = x̂1
-        else
-            xt = interpolate(f, xt, x̂1, min(1,step/(1-t)))
-        end
+        res = model(ts, xt)
+        xt = takestep.(rng, f, xt, res, t, step, (tracker,))
     end
     return xt
 end
 flow(f::Flow, x0::FlowState, model; steps = 100, tracker = NullTracker()) = flow((f,), (x0,), (t,xt) -> (model(t[1],xt[1]), ), steps = steps, tracker = tracker)[1]
+
+function takestep(_, f::Flow, xt, out, t, step, tracker)
+    x̂1 = copy(xt)
+    x̂1.x .= out
+    track!(tracker, t, xt, x̂1)
+    interpolate(f, xt, x̂1, min(1, step / (1 - t)))
+end
+
+function takestep(rng, f::DiscreteFlow, xt, out, t, step, tracker)
+    κ(t) = f.schedule(t)
+    κ̇(t) = derivative(κ, t)
+    # track the current state and the predicted logits (should track probs instead?)
+    track!(tracker, t, xt, MatrixFlowState(out, xt.mask))
+    # forward velocity u_t(⋅, Xt) (equation 24)
+    velo = (κ̇(t) / (1 - κ(t))) .* (softmax(out) - xt.x)
+    p = xt + step * velo
+    MatrixFlowState(randcat(rng, p ./ sum(p, dims = 1)), xt.mask)
+end
+
+function randcat(rng::AbstractRNG, p::AbstractArray)
+    x = zeros(Int, Base.tail(size(p)))
+    for i in CartesianIndices(axes(x))
+        x[i] = _randcat(rng, @view p[:,i])
+    end
+    onehotbatch(x, axes(p, 1))
+end
+
+function _randcat(rng::AbstractRNG, p::AbstractVector)
+    K = length(p)
+    @assert K ≥ 1
+    # This algorithm is O(K), but it is fine because we don't generate many
+    # samples from the same distribution.
+    u = rand(rng, eltype(p))
+    k = 0
+    while u ≥ 0 && k < K
+        k += 1
+        u -= p[k]
+    end
+    return k
+end
     
 
 ######################################################################
@@ -443,6 +492,12 @@ function loss(
     #return mean((r1.mask .* sq) ./ ((1+eps) .- t).^pow) / (T(mean(r1.mask)) + T(0.0001f0))
 end
 
+loss(
+    _::DiscreteFlow,
+    x̂1::AbstractArray,   # logits
+    x1::MatrixFlowState, # one-hot
+) = mean(.-sum(x1 .* logsoftmax(x̂1; dims = 1); dims = 1))
+
 
 
 #########################################################
@@ -500,4 +555,3 @@ Converts a continuous matrix (where each column can be thought of as a multivari
 function unrelax(points::AbstractArray, r::Relaxation; L = 2)
     return [r.ind2alph[argmin(sum((r.m .- points[:,i]).^L, dims = 1)[:])] for i in 1:size(points, 2)]
 end
-
